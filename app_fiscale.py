@@ -1,37 +1,43 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import os
 from datetime import datetime
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Gestione IVA Forfettaria", layout="wide", page_icon="💰")
 
-# --- FILE DI DATABASE ---
+# --- DEFINIZIONE COLONNE ---
+# Definiamo le colonne una volta sola per evitare errori di mismatch
+COLONNE = ["Data", "Descrizione", "Categoria", "Importo", "Fatturato"]
 DB_FILE = "database_entrate.csv"
 
+# --- FUNZIONI DATI ---
 def load_data():
     if os.path.exists(DB_FILE):
-        df = pd.read_csv(DB_FILE)
-        df['Data'] = pd.to_datetime(df['Data'])
-        return df
+        try:
+            df = pd.read_csv(DB_FILE)
+            # Assicuriamoci che le colonne siano quelle giuste
+            if list(df.columns) != COLONNE:
+                return pd.DataFrame(columns=COLONNE)
+            df['Data'] = pd.to_datetime(df['Data'])
+            return df
+        except:
+            return pd.DataFrame(columns=COLONNE)
     else:
-        return pd.DataFrame(columns=["Data", "Descrizione", "Categoria", "Importo", "Fatturato"])
+        return pd.DataFrame(columns=COLONNE)
 
 def save_data(df):
     df.to_csv(DB_FILE, index=False)
 
-# Caricamento iniziale dei dati
+# Inizializzazione Session State
 if 'data' not in st.session_state:
     st.session_state.data = load_data()
 
-# --- PARAMETRI FISCALI (Coefficiente 78%) ---
+# --- PARAMETRI FISCALI ---
 COEFF_REDDITIVITA = 0.78
-INPS_ALIQUOTA = 0.2607 # Gestione Separata INPS
+INPS_ALIQUOTA = 0.2607
 
-# --- INTERFACCIA ---
-st.title("💰 Gestione Entrate Partita IVA")
-st.markdown("Monitoraggio incassi, tasse e netto mensile.")
+st.title("💰 Gestione Forfettario Fitness")
 
 # --- SIDEBAR PER INSERIMENTO ---
 st.sidebar.header("➕ Registra Incasso")
@@ -39,68 +45,84 @@ with st.sidebar.form("input_form", clear_on_submit=True):
     data_incasso = st.date_input("Data", datetime.now())
     descrizione = st.text_input("Cliente / Descrizione")
     categoria = st.selectbox("Servizio", ["Personal Training", "Abbonamenti", "Coaching online", "Docente", "Altri servizi"])
-    importo = st.number_input("Importo Lordo (€)", min_value=0.0, step=50.0)
+    importo = st.number_input("Importo Lordo (€)", min_value=0.0, step=10.0)
     fatturato = st.checkbox("Fattura Emessa?", value=True)
-    
     submit = st.form_submit_button("Salva Pagamento")
 
 if submit:
-    nuova_riga = pd.DataFrame([[data_incasso, descrizione, categoria, importo, fatturato]], 
-                             columns=st.session_state.data.columns)
-    st.session_state.data = pd.concat([st.session_state.data, nuova_riga], ignore_index=True)
+    # Creiamo la nuova riga come dizionario (metodo più sicuro)
+    nuova_entry = {
+        "Data": [pd.to_datetime(data_incasso)],
+        "Descrizione": [descrizione],
+        "Categoria": [categoria],
+        "Importo": [importo],
+        "Fatturato": [fatturato]
+    }
+    nuovo_df = pd.DataFrame(nuova_entry)
+    
+    # Uniamo i dati
+    st.session_state.data = pd.concat([st.session_state.data, nuovo_df], ignore_index=True)
     save_data(st.session_state.data)
-    st.sidebar.success("Salvato con successo!")
+    st.rerun()
 
-# --- CALCOLI FISCALI ---
+# --- ANALISI E VISUALIZZAZIONE ---
 df = st.session_state.data
+
 if not df.empty:
-    # Preparazione date
+    # Pulizia e preparazione dati
     df['Data'] = pd.to_datetime(df['Data'])
     df['Mese'] = df['Data'].dt.strftime('%Y-%m')
     
-    # Calcolo Tasse
-    incasso_totale = df['Importo'].sum()
-    incasso_fatturato = df[df['fatturato'] == True]['Importo'].sum() if 'fatturato' in df.columns else df[df['Fatturato'] == True]['Importo'].sum()
+    # --- CALCOLO TASSE ---
+    lordo_totale = df['Importo'].sum()
+    # Calcolo solo su quanto fatturato
+    lordo_fatturato = df[df['Fatturato'] == True]['Importo'].sum()
     
-    # Logica Forfettario: Tasse solo sul fatturato
-    imponibile = incasso_fatturato * COEFF_REDDITIVITA
-    tasse_inps = imponibile * INPS_ALIQUOTA
-    
+    # Sidebar tasse
     st.sidebar.divider()
-    tipo_tassa = st.sidebar.radio("Aliquota Imposta Sostitutiva", ["5% (Start-up)", "15% (Standard)"])
-    aliquota_sostitutiva = 0.05 if "5%" in tipo_tassa else 0.15
+    scelta_tassa = st.sidebar.radio("Aliquota Imposta Sostitutiva", ["5%", "15%"])
+    aliquota_sost = 0.05 if "5" in scelta_tassa else 0.15
     
-    tasse_sostitutiva = (imponibile - tasse_inps) * aliquota_sostitutiva
+    imponibile = lordo_fatturato * COEFF_REDDITIVITA
+    tasse_inps = imponibile * INPS_ALIQUOTA
+    tasse_sostitutiva = (imponibile - tasse_inps) * aliquota_sost
     totale_tasse = tasse_inps + tasse_sostitutiva
-    netto_reale = incasso_totale - totale_tasse
+    netto_stimato = lordo_totale - totale_tasse
 
-    # --- DASHBOARD METRICHE ---
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Totale Incassato", f"€ {incasso_totale:,.2f}")
-    col2.metric("Tasse Stimate (INPS + Sostitutiva)", f"€ {totale_tasse:,.2f}", delta_color="inverse")
-    col3.metric("Netto Disponibile", f"€ {netto_reale:,.2f}")
+    # --- DASHBOARD ---
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Incasso Totale", f"€ {lordo_totale:,.2f}")
+    c2.metric("Tasse Stimate", f"€ {totale_tasse:,.2f}", delta="- stimato", delta_color="inverse")
+    c3.metric("Netto Reale", f"€ {netto_stimato:,.2f}")
 
     # --- GRAFICO MENSILE ---
     st.subheader("📈 Andamento Mensile (Lordo)")
-    mensile_df = df.groupby('Mese')['Importo'].sum().reset_index()
-    fig = px.bar(mensile_df, x='Mese', y='Importo', text_auto='.2s', color_discrete_sequence=['#2ecc71'])
-    st.plotly_chart(fig, use_container_width=True)
+    # Ordiniamo per data per il grafico
+    df_sorted = df.sort_values('Data')
+    mensile = df_sorted.groupby('Mese')['Importo'].sum()
+    st.bar_chart(mensile)
 
-    # --- RIASSUNTO PER CATEGORIA ---
-    st.subheader("📂 Analisi per Servizio")
-    cat_df = df.groupby('Categoria')['Importo'].sum().reset_index()
-    fig_pie = px.pie(cat_df, values='Importo', names='Categoria', hole=0.4)
-    st.plotly_chart(fig_pie)
+    # --- RIASSUNTO ---
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.subheader("📂 Per Servizio")
+        per_cat = df.groupby('Categoria')['Importo'].sum()
+        st.table(per_cat)
+    
+    with col_b:
+        st.subheader("🧾 Stato Fatturazione")
+        per_fattura = df.groupby('Fatturato')['Importo'].sum()
+        st.table(per_fattura)
 
-    # --- TABELLA DATI ---
-    st.subheader("📝 Registro Transazioni")
+    # --- REGISTRO ---
+    st.subheader("📝 Registro Operazioni")
     st.dataframe(df.sort_values(by="Data", ascending=False), use_container_width=True)
     
-    # Bottone elimina ultimo inserimento (per errori)
-    if st.button("Elimina ultima riga inserita"):
-        st.session_state.data = st.session_state.data[:-1]
-        save_data(st.session_state.data)
-        st.rerun()
-
+    # Bottone Reset
+    if st.sidebar.button("🗑️ Cancella tutto il database"):
+        if os.path.exists(DB_FILE):
+            os.remove(DB_FILE)
+            st.session_state.data = pd.DataFrame(columns=COLONNE)
+            st.rerun()
 else:
-    st.info("Nessun dato registrato. Usa la barra laterale per inserire il tuo primo incasso!")
+    st.info("Benvenuto! Registra il tuo primo incasso dalla barra laterale per vedere le statistiche.")
